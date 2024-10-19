@@ -1,5 +1,5 @@
 /*--------------------------------------------------------------------------
-	Berwick Saga Turn System, v0.3
+	Berwick Saga Turn System, v0.75
 	Created by robinco
 	
 	Changes the turn system to how it works in Berwick Saga. This means that
@@ -53,6 +53,8 @@
 	06/08/2024: v0.7,
 		- Added Compatibility with SearchMap plugin
 		- Fixed undefined i and j variables in for loops
+	16/10/2024: v0.75,
+		- Fixed a bug with the players repeatMove, may be a compatibility issue with EventScheduler
 					   
 --------------------------------------------------------------------------*/
 
@@ -202,23 +204,17 @@ var BWSTurnSystem = {
 		// after a unit ends their action, remove first one in the list
 		this.turnList.shift();
 		
-		// moved elsewhere
-/* 		// if it's empty, start a new turn
-		if (this.turnList.length === 0) {
-			this.newTurn();
-			this.initialiseList();
-		} */
-		
 		// calling it all the time, the function will sort out if there's anything
 		// which actually has to be done (i.e. changes iun number of units, changes in
 		// unit affilation, etc.)
 		// a little inelegant but w/e
 		this.updateList(); 
 	
-	
 		// do all the other fancy new turn stuff
-		// currently ending turn after each action (so can have multiple player phase/enemy phases in a row)
-		TurnControl.turnEnd();
+		// Only end the turn when needed, right now it doesn't affect anything, but makes it easier for counting.
+		if(this.turnList[0] !== root.getCurrentSession().getTurnType()){
+			TurnControl.turnEnd();
+		}
 	},
 	
 	newTurn: function() {
@@ -368,7 +364,7 @@ var BWSTurnSystem = {
 		for (i = 0; i < turnListCount; i++) {
 			if (this.turnList[i] === TurnType.PLAYER) {
 				this.turnList.splice(i, 1);
-				//Check the same index again after splicing, when the list has no players the loop ends.
+				//Check the same index again after splicing
 				i--
 			}
 		}
@@ -606,17 +602,23 @@ MapSequenceCommand.drawSequence = function() {
 	}
 };
 
-
-/* MapPartsCollection._configureMapParts = function(groupArray) {
-	if (EnvironmentControl.isMapUnitWindowDetail()) {
-		groupArray.appendObject(MapParts.UnitInfo);
+PlayerTurn._moveUnitCommand = function() {
+	var result = this._mapSequenceCommand.moveSequence();
+	
+	if (result === MapSequenceCommandResult.COMPLETE) {
+		this._mapSequenceCommand.resetCommandManager();
+		MapLayer.getMarkingPanel().updateMarkingPanelFromUnit(this._targetUnit);
+		this._changeEventMode();
+		//Add the Player ShiftList here, this is the last code executed when a player unit ends their actions
+		BWSTurnSystem.shiftList();
 	}
-	else {
-		groupArray.appendObject(MapParts.UnitInfoSmall);
+	else if (result === MapSequenceCommandResult.CANCEL) {
+		this._mapSequenceCommand.resetCommandManager();
+		this.changeCycleMode(PlayerTurnMode.MAP);
 	}
-	groupArray.appendObject(MapParts.Terrain);
-	groupArray.appendObject(MapParts.BWSTurnWindow);
-} */
+	
+	return MoveResult.CONTINUE;
+};
 
 
 // autocursor stuff:
@@ -630,7 +632,7 @@ PlayerTurn._moveAutoCursor = function() {
 	
 	if (this._mapLineScroll.moveLineScroll() !== MoveResult.CONTINUE) {
 		pos = this._getDefaultCursorPos();
-		if (pos !== null) { // && EnvironmentControl.isAutoCursor()) {
+		if (pos !== null) {
 			x = pos.x;
 			y = pos.y;
 		}
@@ -653,7 +655,7 @@ PlayerTurn._getDefaultCursorPos = function() {
 	
 	for (i = 0; i < count; i++) {
 		unit = list.getData(i);
-		if (!unit.isWait() && StateControl.isTargetControllable(unit)) { //(unit.getImportance() === ImportanceType.LEADER) {
+		if (!unit.isWait() && StateControl.isTargetControllable(unit)) {
 			targetUnit = unit;
 			break;
 		}
@@ -690,7 +692,6 @@ MapCommand.TurnEnd = defineObject(BaseListCommand,
 			this._saveCursor();
 		}
 		BWSTurnSystem.endPlayerTurn();
-		//TurnControl.turnEnd();
 	},
 	
 	moveCommand: function() {
@@ -801,19 +802,17 @@ TurnChangeStart.pushFlowEntries = function(straightFlow) {
 	var numAlly = AllyList.getControllableList().getCount();
 	var totalUnits = numPlayer + numEnemy + numAlly;
 	
-	
 	// if the turn list is empty, start a new turn
 	// MOVED HERE
 	if (BWSTurnSystem.turnList.length === 0) {
 		// root.log('starting new turn')
 		BWSTurnSystem.newTurn();
 		BWSTurnSystem.initialiseList();
-	}	
+	}
 	
 	// maybe need another check here for berserked uits etc. 
 	// bewcause this is being called too many times
 	if (BWSTurnSystem.turnList.length === totalUnits) {// || root.getCurrentSession().getTurnCount() === 0) {
-		straightFlow.pushFlowEntry(ReinforcementAppearFlowEntry);
 		if (this._isTurnAnimeEnabled()) {
 			straightFlow.pushFlowEntry(TurnAnimeFlowEntry); // using an animation (resource location/animations)
 		}
@@ -996,39 +995,21 @@ var PlayerBerserkTurn = defineObject(EnemyTurn,
 
 
 
-// reinforcement stuff.
+//Removed create reinforcement changes, now we can have Ambush spawns again and they don't need to update the list.
 
-ReinforcementChecker._checkReinforcementPage = function(posData, arr) {
-	var i, pageData, turnCount;
-	var turnType = root.getCurrentSession().getTurnType();
-	var count = posData.getReinforcementPageCount();
-	
-	for (i = 0; i < count; i++) {
-		pageData = posData.getReinforcementPage(i);
-		turnCount = this._getTurnCount(pageData);
-		// Check if a condition such as "Start Turn" is satisfied.
-		// ^ not anymore! they should appear as soon as the turn starts
-		if (pageData.getStartTurn() <= turnCount && pageData.getEndTurn() >= turnCount) {// && turnType === pageData.getTurnType()) {
-			// Check if the event condition is satisfied.
-			if (pageData.isCondition()) {
-				// Appear.
-				this._createReinforcementUnit(posData, pageData, arr);
-				// also need to update the turn list
-				BWSTurnSystem.updateList();
-				break;
-			}
-		}
-	}
-};
-
-
-// reinforcements no longer appear here but in TurnChangeStart instead.
 TurnChangeEnd.pushFlowEntries = function(straightFlow) {
 	// but also do berserk stuff here??
 	var numPlayer = PlayerList.getControllableList().getCount();
 	var numEnemy = EnemyList.getControllableList().getCount();
 	var numAlly = AllyList.getControllableList().getCount();
 	var totalUnits = numPlayer + numEnemy + numAlly;
+
+	//This checks for reinforcement when the last Player or Enemy moves, this allows to follow the end of player/enemy phase setting.
+	var numPlayersInList = BWSTurnSystem.countType(TurnType.PLAYER);
+	var numEnemyInList = BWSTurnSystem.countType(TurnType.ENEMY);
+	if(numPlayersInList == 0 || numEnemyInList == 0 ){
+		straightFlow.pushFlowEntry(ReinforcementAppearFlowEntry);
+	}
 	// turn list is updated before we get here so this check is
 	// basically the same as saying if it's about to be a new turn
 	// CHANGED NOW UHUHU HU
@@ -1058,36 +1039,6 @@ TurnChangeEnd._checkActorList = function() {
 };
 
 
-// Claris thing
-/* ReinforcementChecker._setMapScroll = function() {
-	var session = root.getCurrentSession();
-	// obtain the most recent enemy
-	var Unit = EnemyList.getAliveList().getData(EnemyList.getAliveList().getCount()-1)
-	// if xScroll is at 0X or off-map...
-	if (this._xScroll <= 0){
-		//log adjustment.
-		root.log("adjusted scroll X")
-		//set it to enemy X.
-		this._xScroll === Unit.getMapX();
-	}
-	else{
-		//otherwise, set normal scroll pixel X.
-		session.setScrollPixelX(this._xScroll * GraphicsFormat.MAPCHIP_WIDTH);
-	}
-	// if yScroll is at 0Y or off-map...
-	if (this._yScroll <= 0){
-		//log adjustment.
-		root.log("adjusted scroll Y")
-		//set it to enemy Y.
-		this._yScroll === Unit.getMapY();
-	}
-	else{
-		//otherwise, set normal scroll pixel Y.
-		session.setScrollPixelY(this._yScroll * GraphicsFormat.MAPCHIP_HEIGHT);
-	}
-}; */
-
-
 // again maybe want to scroll there rather than teleport?
 ReinforcementChecker._setMapScroll = function() {
 	var session = root.getCurrentSession();
@@ -1095,10 +1046,6 @@ ReinforcementChecker._setMapScroll = function() {
 	session.setScrollPixelX(this._xScroll * GraphicsFormat.MAPCHIP_WIDTH);
 	session.setScrollPixelY(this._yScroll * GraphicsFormat.MAPCHIP_HEIGHT);
 };
-	
-
-
-
 
 
 TurnControl.turnEnd = function() {
@@ -1106,7 +1053,7 @@ TurnControl.turnEnd = function() {
 	if (root.getBaseScene() === SceneType.FREE) {
 		if (root.getCurrentSession().getTurnType() === TurnType.PLAYER) {
 			// not really sure why but removing this fixes an error
-			//SceneManager.getActiveScene().getTurnObject().clearTurnTargetUnit();
+			SceneManager.getActiveScene().getTurnObject().clearTurnTargetUnit();
 		}
 		
 		SceneManager.getActiveScene().turnEnd();
@@ -1160,121 +1107,9 @@ TurnChangeEnd._startNextTurn = function() {
 	root.getCurrentSession().setTurnType(nextTurnType);
 };
 
-// in case an attacking player dies, make change here
-MapSequenceCommand._doLastAction = function() {
-	var i;
-	var unit = null;
-	var list = PlayerList.getSortieList();
-	var count = list.getCount();
-	
-	// Check it because the unit may not exist by executing a command.
-	for (i = 0; i < count; i++) {
-		if (this._targetUnit === list.getData(i)) {
-			unit = this._targetUnit;
-			break;
-		}
-	}	
-	
-	// Check if the unit doesn't die and still exists.
-	if (unit !== null) {
-		if (this._unitCommandManager.getExitCommand() !== null) {
-			if (!this._unitCommandManager.isRepeatMovable()) {
-				// If move again is not allowed, don't move again.
-				this._targetUnit.setMostResentMov(ParamBonus.getMov(this._targetUnit));
-			}
-			
-			// Set the wait state because the unit did some action.
-			this._parentTurnObject.recordPlayerAction(true);
-			return 0;
-		}
-		else {
-			// Get the position and cursor back because the unit didn't act.
-			this._parentTurnObject.setPosValue(unit);
-		}	
-		
-		// Face forward.
-		unit.setDirection(DirectionType.NULL);
-	}
-	else {
-		this._parentTurnObject.recordPlayerAction(true);
-		// if unit is dead, shift list
-		BWSTurnSystem.shiftList();
-		// root.log(BWSTurnSystem.turnList);			
-		return 1;
-	}
+//Removed doLastAction changes since moving the shiftList is more efficient.
 
-	
-	return 2;
-};
-
-
-ReactionFlowEntry._completeMemberData = function(playerTurn) {
-	var skill;
-	
-	// shift turn list (remove 1st)
-	// moving the thing here rather than in unitwaitflowentry
-	// BUT only if not berserked since they don't use up turns
-	/*if (StateControl.isTargetControllable(this._targetUnit)) {
-		BWSTurnSystem.shiftList();
-	}*/
-		// root.log(BWSTurnSystem.turnList);			
-	// BUT there is a change of a berserked ally killing something which means we'd
-	// have to update the list, so do that
-	/* 	else {
-		root.log('oh no unctrollable update')
-		BWSTurnSystem.updateList();
-	} */
-	
-	
-	
-	if (this._targetUnit.getHp() === 0) {
-		if (StateControl.isTargetControllable(this._targetUnit)) {
-			BWSTurnSystem.shiftList();
-			// root.log(BWSTurnSystem.turnList);			
-		}
-		return EnterResult.NOTENTER;
-	}
-	
-	// Action again doesn't occur when it's unlimited action.
-	if (Miscellaneous.isPlayerFreeAction(this._targetUnit)) {
-		if (StateControl.isTargetControllable(this._targetUnit)) {
-			BWSTurnSystem.shiftList();
-			// root.log(BWSTurnSystem.turnList);			
-		}
-		return EnterResult.NOTENTER;
-	}
-	
-	if (this._targetUnit.getReactionTurnCount() !== 0) {
-		if (StateControl.isTargetControllable(this._targetUnit)) {
-			BWSTurnSystem.shiftList();
-			// root.log(BWSTurnSystem.turnList);			
-		}
-		return EnterResult.NOTENTER;
-	}
-	
-	skill = SkillControl.getBestPossessionSkill(this._targetUnit, SkillType.REACTION);
-	if (skill === null) {
-		if (StateControl.isTargetControllable(this._targetUnit)) {
-			BWSTurnSystem.shiftList();
-			// root.log(BWSTurnSystem.turnList);			
-		}
-		return EnterResult.NOTENTER;
-	}
-	
-	if (!Probability.getInvocationProbabilityFromSkill(this._targetUnit, skill)) {
-		if (StateControl.isTargetControllable(this._targetUnit)) {
-			BWSTurnSystem.shiftList();
-			// root.log(BWSTurnSystem.turnList);			
-		}
-		return EnterResult.NOTENTER;
-	}
-	
-	this._skill = skill;
-	
-	this._startReactionAnime();
-	
-	return EnterResult.OK;
-};
+//Removed ReactionFlowEntry changes since we moved shifList into a better position.
 
 // changes to enemy action builder
 // main thing here is that units who don't move now "wait" as an action
@@ -1821,18 +1656,6 @@ var EnemyTurn = defineObject(BaseTurn,
 				// PreAction is an action before the unit moves or attacks,
 				// such as ActivePatternFlowEntry.
 				result = this._straightFlow.enterStraightFlow();	
-
-
-
-				// condition here...?
-				// if we're skipping, create autoaction thing now to prevent an error
-/* 				if (this._isSkipMode()) {
-					this._createAutoAction();
-					this._startAutoAction();
-				}				
-				 */
-							
-				
 				if (result === EnterResult.NOTENTER) {
 					
 
@@ -1849,6 +1672,8 @@ var EnemyTurn = defineObject(BaseTurn,
 					
 					
 					// If this method returns false, it means to loop, so the next unit is immediately checked.
+					// This is called once every time a unit is skipped, so is better to put shifList here.
+					BWSTurnSystem.shiftList();
 					// If there are many units, looping for a long time and the busy state occurs.
 					if (this._isSkipProgressDisplayable()) {
 						this.changeCycleMode(EnemyTurnMode.TOP);
@@ -1874,6 +1699,8 @@ var EnemyTurn = defineObject(BaseTurn,
 				// enemy moves after a mobile one (don't really know why it fixes it but eh)
 				//this._autoActionCursor.endAutoActionCursor();
 				this._changeIdleMode(EnemyTurnMode.TOP, this._getIdleValue());
+				//This seems to be the last execution of each enemy unit when using autoactions.
+				BWSTurnSystem.shiftList();
 			}
 		}
 		
@@ -1888,6 +1715,8 @@ var EnemyTurn = defineObject(BaseTurn,
 			}
 			else {
 				this.changeCycleMode(EnemyTurnMode.TOP);
+				//If preActionOccurs and there is no AutoAction we need to shiftList
+				BWSTurnSystem.shiftList();
 			}
 		}
 		
@@ -1979,7 +1808,6 @@ var EnemyTurn = defineObject(BaseTurn,
 	},
 	
 	_drawAutoEventCheck: function() {
-		this._eventChecker.drawEventChecker();
 	},
 	
  	_drawCursorShow: function() {
